@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>JoJo Шахматы: Stand Battle</title>
+<style>
+  :root { --gold: #ffd700; --neon: #ff00ff; --bg: #1a0033; }
+  * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+  body {
+    background: radial-gradient(circle at center, #2a004d, #0a001a);
+    color: var(--gold); font-family: 'Trebuchet MS', sans-serif;
+    min-height: 100vh; display: flex; flex-direction: column; align-items: center;
+    justify-content: flex-start; padding: 10px; overflow-x: hidden;
+  }
+  .header { text-align: center; margin-bottom: 5px; width: 100%; }
+  h1 { font-size: 1.1em; letter-spacing: 1px; text-shadow: 0 0 8px var(--neon); }
+  .sp-bar { font-size: 0.8em; color: #00ffff; font-weight: bold; margin-top: 3px; }
+
+  #board {
+    display: grid; grid-template-columns: repeat(8, 1fr);
+    width: 96vw; max-width: 380px; height: 96vw; max-height: 380px;
+    border: 2px solid var(--gold); box-shadow: 0 0 15px var(--neon);
+    border-radius: 4px; margin-top: 5px;
+  }
+  .cell {
+    display: flex; align-items: center; justify-content: center;
+    font-size: 26px; cursor: pointer; position: relative;
+  }
+  .light { background: #4b0082; }
+  .dark { background: #2a004d; }
+  
+  .piece { pointer-events: none; line-height: 1; text-shadow: 0 0 5px #000; }
+  .w-piece { color: #ffffff; text-shadow: 0 0 5px #ffd700; }
+  .b-piece { color: #ff4444; text-shadow: 0 0 5px #000; }
+
+  .selected { background: var(--gold) !important; transform: scale(1.05); z-index: 10; }
+  .valid::after {
+    content: ''; position: absolute; width: 10px; height: 10px;
+    background: #00ffff; border-radius: 50%; box-shadow: 0 0 8px #00ffff;
+  }
+  .capture { box-shadow: inset 0 0 0 3px #ff00ff; }
+  
+  .controls { display: flex; gap: 8px; margin-top: 10px; width: 96%; max-width: 380px; }
+  button {
+    padding: 10px; font-size: 0.8em; font-weight: bold; flex: 1;
+    background: linear-gradient(135deg, var(--gold), var(--neon)); color: #000;
+    border: none; border-radius: 6px; box-shadow: 0 0 10px var(--neon);
+  }
+  button:disabled { opacity: 0.5; filter: grayscale(1); }
+  
+  #status { margin-top: 8px; font-size: 0.9em; font-weight: bold; text-align: center; min-height: 20px; }
+  #log {
+    width: 96vw; max-width: 380px; height: 50px; overflow-y: auto;
+    background: rgba(0,0,0,0.6); border: 1px solid #555; border-radius: 4px;
+    margin-top: 5px; padding: 4px; font-size: 0.7em; color: #aaa;
+  }
+  .log-bot { color: #ff00ff; } .log-player { color: #00ff00; }
+
+  @keyframes flash { 0%,100% { opacity: 0; } 50% { opacity: 1; } }
+  @keyframes shake { 0%,100% { transform: translateX(0); } 25% { transform: translateX(-3px); } 75% { transform: translateX(3px); } }
+  .ability-flash { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: white; pointer-events: none; z-index: 100; animation: flash 0.4s forwards; }
+  .shake { animation: shake 0.3s; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>⚡ STAND BATTLE CHESS ⚡</h1>
+    <div class="sp-bar" id="spDisplay">Мои SP: 10 | Врага: 10</div>
+  </div>
+  <div id="board"></div>
+  <div class="controls">
+    <button id="btnAbility" disabled>✨ Способность</button>
+    <button id="btnRestart">🔄 Заново</button>
+  </div>
+  <div id="status">Твой ход! Выбери фигуру.</div>
+  <div id="log"></div>
+
+<script>
+  // Классические символы для пешек, коней, слонов, ладей
+  const PIECES = {
+    'wK': '♔', 'wQ': '♕', 'wR': '♖', 'wB': '♗', 'wN': '♘', 'wP': '♙',
+    'bK': '♚', 'bQ': '♛', 'bR': '♜', 'bB': '♝', 'bN': '♞', 'bP': '♟'
+  };
+
+  // Имена стендов для лога
+  const NAMES = {
+    'wK': 'Star Platinum', 'wQ': 'The World', 'wR': 'Magician Red', 'wB': 'Hierophant Green', 'wN': 'Silver Chariot', 'wP': 'Echoes',
+    'bK': 'King Crimson', 'bQ': 'Killer Queen', 'bR': 'Aerosmith', 'bB': 'Purple Haze', 'bN': 'Sex Pistols', 'bP': 'Bad Company'
+  };
+
+  // Способности (только у Королей и Ферзей)
+  const ABILITIES = {
+    'wQ': { name: 'ZA WARUDO', cost: 30 },
+    'wK': { name: 'ORA ORA ORA', cost: 20 },
+    'bQ': { name: 'KILLER QUEEN', cost: 20 },
+    'bK': { name: 'KING CRIMSON', cost: 30 }
+  };
+
+  let board = [], selected = null, turn = 'w', validMoves = [];
+  let spPlayer = 10, spEnemy = 10, playerExtraTurn = false, gameActive = true;
+
+  const boardEl = document.getElementById('board');
+  const statusEl = document.getElementById('status');
+  const logEl = document.getElementById('log');
+
+  function init() {
+    board = [
+      ['bR', 'bN', 'bB', 'bQ', 'bK', 'bB', 'bN', 'bR'],
+      ['bP', 'bP', 'bP', 'bP', 'bP', 'bP', 'bP', 'bP'],
+      ['', '', '', '', '', '', '', ''],
+      ['', '', '', '', '', '', '', ''],
+      ['', '', '', '', '', '', '', ''],
+      ['', '', '', '', '', '', '', ''],
+      ['wP', 'wP', 'wP', 'wP', 'wP', 'wP', 'wP', 'wP'],
+      ['wR', 'wN', 'wB', 'wQ', 'wK', 'wB', 'wN', 'wR']
+    ];
+    turn = 'w'; selected = null; validMoves = [];
+    spPlayer = 10; spEnemy = 10; playerExtraTurn = false; gameActive = true;
+    logEl.innerHTML = '<div class="log-entry">Битва началась! Твой ход.</div>';
+    updateUI(); render();
+  }
+
+  function updateUI() {
+    document.getElementById('spDisplay').textContent = `Мои SP: ${spPlayer} | Врага: ${spEnemy}`;
+    const btn = document.getElementById('btnAbility');
+    if (selected && ABILITIES[board[selected.r][selected.c]]) {
+      const ab = ABILITIES[board[selected.r][selected.c]];
+      btn.disabled = spPlayer < ab.cost || turn !== 'w';
+      btn.textContent = `✨ ${ab.name} (${ab.cost})`;
+    } else {
+      btn.disabled = true; btn.textContent = '✨ Способность';
+    }
+  }
+
+  function render() {
+    boardEl.innerHTML = '';
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        const cell = document.createElement('div');
+        cell.className = 'cell ' + ((r + c) % 2 === 0 ? 'light' : 'dark');
+        
+        const piece = board[r][c];
+        if (piece) {
+          cell.innerHTML = `<span class="piece ${piece[0]==='w'?'w-piece':'b-piece'}">${PIECES[piece]}</span>`;
+        }
+        
+        if (selected && selected.r === r && selected.c === c) cell.classList.add('selected');
+        if (validMoves.some(m => m.r === r && m.c === c)) {
+          cell.classList.add('valid');
+          if (board[r][c]) cell.classList.add('capture');
+        }
+        
+        // Обработка нажатий (защита от двойного тапа)
+        cell.addEventListener('touchstart', (e) => { e.preventDefault(); handleClick(r, c); }, { passive: false });
+        cell.addEventListener('mousedown', (e) => { e.preventDefault(); handleClick(r, c); });
+        
+        boardEl.appendChild(cell);
+      }
+    }
+    updateUI();
+  }
+
+  function handleClick(r, c) {
+    if (!gameActive || turn !== 'w') return;
+    const piece = board[r][c];
+    
+    if (selected) {
+      if (validMoves.some(m => m.r === r && m.c === c)) {
+        makeMove(selected.r, selected.c, r, c);
+        return;
+      }
+    }
+    
+    if (piece && piece[0] === 'w') {
+      selected = { r, c };
+      validMoves = getMoves(r, c, 'w');
+      render();
+    } else {
+      selected = null; validMoves = []; render();
+    }
+  }
+
+  function makeMove(r1, c1, r2, c2) {
+    const attacker = board[r1][c1];
+    const target = board[r2][c2];
+    
+    if (target) {
+      spPlayer += 10;
+      logEl.innerHTML += `<div class="log-entry log-player">${NAMES[attacker]} атакует ${NAMES[target]}! (+10 SP)</div>`;
+    }
+    
+    board[r2][c2] = attacker; board[r1][c1] = '';
+    selected = null; validMoves = [];
+    
+    if (target === 'bK') return endGame(true);
+    
+    if (playerExtraTurn) {
+      playerExtraTurn = false; statusEl.textContent = "Время возобновилось! Твой ход снова."; render(); return;
+    }
+    
+    turn = 'b'; statusEl.textContent = "Бот думает..."; render();
+    setTimeout(botTurn, 800);
+  }
+
+  function getMoves(r, c, color) {
+    const piece = board[r][c]; if (!piece || piece[0] !== color) return [];
+    const type = piece[1]; let moves = [];
+    const add = (nr, nc) => { if (nr>=0&&nr<8&&nc>=0&&nc<8) { const t = board[nr][nc]; if (!t || t[0]!==color) moves.push({r:nr,c:nc}); } };
+    const slide = (dr, dc) => { let nr=r+dr, nc=c+dc; while (nr>=0&&nr<8&&nc>=0&&nc<8) { const t = board[nr][nc]; if (!t) moves.push({r:nr,c:nc}); else { if (t[0]!==color) moves.push({r:nr,c:nc}); break; } nr+=dr; nc+=dc; } };
+
+    if (type === 'P') { const dir = color==='w'?-1:1; if(r+dir>=0&&r+dir<8&&!board[r+dir][c]) moves.push({r:r+dir,c}); if(c-1>=0&&r+dir>=0&&r+dir<8&&board[r+dir][c-1]&&board[r+dir][c-1][0]!==color) moves.push({r:r+dir,c:c-1}); if(c+1<8&&r+dir>=0&&r+dir<8&&board[r+dir][c+1]&&board[r+dir][c+1][0]!==color) moves.push({r:r+dir,c:c+1}); }
+    else if (type === 'R') { slide(1,0); slide(-1,0); slide(0,1); slide(0,-1); }
+    else if (type === 'B') { slide(1,1); slide(1,-1); slide(-1,1); slide(-1,-1); }
+    else if (type === 'Q') { slide(1,0); slide(-1,0); slide(0,1); slide(0,-1); slide(1,1); slide(1,-1); slide(-1,1); slide(-1,-1); }
+    else if (type === 'N') { [[2,1],[2,-1],[-2,1],[-2,-1],[1,2],[1,-2],[-1,2],[-1,-2]].forEach(([dr,dc])=>add(r+dr,c+dc)); }
+    else if (type === 'K') { for(let dr=-1;dr<=1;dr++) for(let dc=-1;dc<=1;dc++) if(dr!==0||dc!==0) add(r+dr,c+dc); }
+    return moves;
+  }
+
+  document.getElementById('btnAbility').onclick = () => {
+    if (!selected || turn !== 'w') return;
+    const piece = board[selected.r][selected.c];
+    const ab = ABILITIES[piece];
+    if (!ab || spPlayer < ab.cost) return;
+    
+    spPlayer -= ab.cost;
+    const flash = document.createElement('div'); flash.className = 'ability-flash';
+    document.body.appendChild(flash); setTimeout(() => flash.remove(), 400);
+    boardEl.classList.add('shake'); setTimeout(() => boardEl.classList.remove('shake'), 300);
+
+    if (piece === 'wQ') {
+      playerExtraTurn = true;
+      statusEl.textContent = "⏳ ZA WARUDO! Время остановлено!";
+      logEl.innerHTML += `<div class="log-entry log-player">Ты активировал ZA WARUDO!</div>`;
+    } else if (piece === 'wK') {
+      let hit = false;
+      for(let dr=-1; dr<=1; dr++) for(let dc=-1; dc<=1; dc++) {
+        let nr = selected.r+dr, nc = selected.c+dc;
+        if(nr>=0 && nr<8 && nc>=0 && nc<8 && board[nr][nc] && board[nr][nc][0]==='b') { board[nr][nc] = ''; hit = true; }
+      }
+      statusEl.textContent = hit ? "👊 ORA ORA ORA! Враг разбит!" : "Промах!";
+      logEl.innerHTML += `<div class="log-entry log-player">Star Platinum использовал ORA ORA ORA!</div>`;
+    }
+    
+    selected = null; validMoves = []; render(); turn = 'b';
+    setTimeout(botTurn, 1000);
+  };
+
+  // УМНЫЙ БОТ
+  function botTurn() {
+    if (!gameActive) return;
+    let allMoves = [];
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        if (board[r][c] && board[r][c][0] === 'b') {
+          getMoves(r, c, 'b').forEach(m => allMoves.push({ fromR: r, fromC: c, toR: m.r, toC: m.c, piece: board[r][c] }));
+        }
+      }
+    }
+    if (allMoves.length === 0) return;
+
+    // Бот использует способности
+    if (spEnemy >= 30 && Math.random() > 0.4) {
+      const kingPos = findKing('bK');
+      if (kingPos) {
+        spEnemy -= 30;
+        const flash = document.createElement('div'); flash.className = 'ability-flash';
+        document.body.appendChild(flash); setTimeout(() => flash.remove(), 400);
+        // Стираем случайную фигуру игрока
+        let wPieces = [];
+        for(let r=0;r<8;r++) for(let c=0;c<8;c++) if(board[r][c] && board[r][c][0]==='w') wPieces.push({r,c,type:board[r][c]});
+        if(wPieces.length>0) {
+          wPieces.sort((a,b)=> (a.type[1]==='K'?1:-1)); // Не убиваем короля сразу
+          const target = wPieces[0];
+          board[target.r][target.c] = '';
+          logEl.innerHTML += `<div class="log-entry log-bot">King Crimson стер ${NAMES[target.type]}!</div>`;
+          statusEl.textContent = "🩸 KING CRIMSON! Враг стер твою фигуру!";
+        }
+      }
+    }
+
+    let bestMove = allMoves[0]; let bestScore = -9999;
+    allMoves.forEach(m => {
+      let score = Math.random() * 2;
+      const target = board[m.toR][m.toC];
+      if (target) {
+        if (target[1] === 'K') score = 1000;
+        else if (target[1] === 'Q') score = 100;
+        else if (target[1] === 'R') score = 50;
+        else if (target[1] === 'B' || target[1] === 'N') score = 30;
+        else score = 10;
+      }
+      if (score > bestScore) { bestScore = score; bestMove = m; }
+    });
+
+    const target = board[bestMove.toR][bestMove.toC];
+    if (target && target[0] === 'w') {
+      spEnemy += 10;
+      logEl.innerHTML += `<div class="log-entry log-bot">${NAMES[bestMove.piece]} атакует ${NAMES[target]}!</div>`;
+    }
+    
+    board[bestMove.toR][bestMove.toC] = bestMove.piece;
+    board[bestMove.fromR][bestMove.fromC] = '';
+    
+    if (target === 'wK') return endGame(false);
+    turn = 'w'; statusEl.textContent = "Твой ход!"; render();
+  }
+
+  function findKing(color) {
+    for(let r=0;r<8;r++) for(let c=0;c<8;c++) if(board[r][c]===color) return {r,c};
+    return null;
+  }
+
+  function endGame(win) {
+    gameActive = false;
+    statusEl.textContent = win ? "⭐ YARE YARE DAZE! Победа!" : "💀 ORA ORA! Ты проиграл.";
+    logEl.innerHTML += `<div class="log-entry ${win?'log-player':'log-bot'}">${win ? 'Ты победил!' : 'Бот победил...'}</div>`;
+    render();
+  }
+
+  document.getElementById('btnRestart').onclick = init;
+  init();
+</script>
+</body>
+</html>
